@@ -83,6 +83,20 @@ Ao final da fase inicial, o projeto deve entregar:
 2. Relatorio de desempenho com comparacao de modelos.
 3. Recomendacoes tecnicas para deteccao de instabilidade BGP em ambiente de redes.
 
+## Execucao Rapida
+
+Executar o pipeline completo:
+
+```bash
+python pipeline_bgp_flapping.py
+```
+
+Saidas geradas em `resultados/`:
+
+1. `metrics_modelos.csv`
+2. `distribuicao_classes_por_arquivo.csv`
+3. `resumo_execucao.json`
+
 ## Licenca
 
 Este projeto de codigo-fonte esta licenciado sob a Apache License 2.0.
