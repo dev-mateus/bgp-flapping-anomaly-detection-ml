@@ -1,0 +1,8 @@
+source_file,total,positivos,taxa_positiva
+BCNET_regular.csv,1440,0,0.0
+Code_Red_I.csv,7200,600,0.08333333333333333
+Moscow_blackout.csv,7200,240,0.03333333333333333
+Nimda.csv,8609,1301,0.1511209199674759
+RIPE_regular.csv,7196,0,0.0
+Slammer.csv,7200,869,0.12069444444444444
+WannaCrypt.csv,11520,5760,0.5

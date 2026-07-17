@@ -1,0 +1,27 @@
+{
+  "split_info": {
+    "total_linhas": 50365,
+    "train_linhas": 35254,
+    "val_linhas": 5037,
+    "test_linhas": 10074,
+    "train_positivos": 6139,
+    "val_positivos": 877,
+    "test_positivos": 1754
+  },
+  "modelo_melhor_f2": {
+    "model": "random_forest_balanced",
+    "threshold": 0.22999999999999998,
+    "accuracy": 0.8586460194560254,
+    "precision": 0.5565843621399177,
+    "recall": 0.9253135689851767,
+    "f1": 0.6950749464668095,
+    "f2": 0.8170559806685461,
+    "mcc": 0.6437599328550109,
+    "pr_auc": 0.7896395045019708,
+    "roc_auc": 0.9462460118629944,
+    "tn": 7027,
+    "fp": 1293,
+    "fn": 131,
+    "tp": 1623
+  }
+}
