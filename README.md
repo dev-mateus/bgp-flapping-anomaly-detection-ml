@@ -82,3 +82,22 @@ Ao final da fase inicial, o projeto deve entregar:
 1. Pipeline executavel ponta a ponta.
 2. Relatorio de desempenho com comparacao de modelos.
 3. Recomendacoes tecnicas para deteccao de instabilidade BGP em ambiente de redes.
+
+## Licenca
+
+Este projeto de codigo-fonte esta licenciado sob a Apache License 2.0.
+
+- Arquivo de licenca: `LICENSE`
+- Texto oficial: [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)
+
+## Licenca dos Dados
+
+Os datasets usados neste repositorio sao de fonte externa e seguem os termos
+de uso da fonte original. A licenca Apache 2.0 deste repositorio aplica-se ao
+codigo e aos artefatos autorais do projeto, nao relicenciando automaticamente
+os dados de terceiros.
+
+Fontes oficiais dos dados utilizados nesta fase:
+
+1. [SFU BGP Datasets](http://www.sfu.ca/~ljilja/cnl/projects/BGP_datasets/index.html)
+2. [IEEE DataPort - RIPE and BCNET](https://ieee-dataport.org/open-access/border-gateway-protocol-bgp-routing-records-reseaux-ip-europeens-ripe-and-bcnet)
