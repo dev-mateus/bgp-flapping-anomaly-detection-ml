@@ -25,81 +25,102 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 
-def discover_csv_files(dataset_root: Path) -> List[Path]:
-    csv_files = [
-        p
-        for p in dataset_root.rglob("*.csv")
-        if not p.name.startswith("._") and "__MACOSX" not in p.as_posix()
+REQUIRED_COLUMNS = {
+    "window_start",
+    "collector",
+    "prefix",
+    "updates_total",
+    "announcements",
+    "withdrawals",
+    "state_transitions",
+    "unique_peers",
+    "unique_as_paths",
+    "as_path_changes",
+    "unique_origin_asns",
+    "avg_as_path_len",
+    "max_as_path_len",
+    "avg_prepend_depth",
+    "duplicate_as_path_events",
+    "communities_total",
+    "min_inter_arrival_sec",
+    "mean_inter_arrival_sec",
+    "max_inter_arrival_sec",
+    "announcement_withdraw_ratio",
+    "label_flapping",
+}
+
+
+def load_dataset(dataset_path: Path) -> pd.DataFrame:
+    df = pd.read_csv(dataset_path)
+    missing = REQUIRED_COLUMNS.difference(df.columns)
+    if missing:
+        missing_cols = ", ".join(sorted(missing))
+        raise RuntimeError(f"Dataset invalido. Colunas ausentes: {missing_cols}")
+
+    df = df.copy()
+    df["label_flapping"] = df["label_flapping"].astype(np.int8)
+    df["window_start"] = df["window_start"].astype(np.int64)
+    return df
+
+
+def temporal_split(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    df_sorted = df.sort_values(["window_start", "collector", "prefix"]).reset_index(drop=True)
+    n_rows = len(df_sorted)
+
+    if n_rows < 10:
+        raise RuntimeError("Dataset pequeno demais para split train/val/test temporal.")
+
+    train_end = max(int(n_rows * 0.70), 1)
+    val_end = max(int(n_rows * 0.80), train_end + 1)
+    val_end = min(val_end, n_rows - 1)
+
+    train_df = df_sorted.iloc[:train_end].copy()
+    val_df = df_sorted.iloc[train_end:val_end].copy()
+    test_df = df_sorted.iloc[val_end:].copy()
+
+    if train_df.empty or val_df.empty or test_df.empty:
+        raise RuntimeError("Falha ao gerar split temporal com particoes nao vazias.")
+
+    split_labels = [
+        train_df["label_flapping"],
+        val_df["label_flapping"],
+        test_df["label_flapping"],
     ]
-    return sorted(csv_files)
+    if any(labels.nunique() < 2 for labels in split_labels):
+        return stratified_split(df_sorted)
 
-
-def build_column_names() -> List[str]:
-    time_cols = ["hhmm", "hour", "minute", "second"]
-    feature_cols = [f"f_{i:02d}" for i in range(1, 38)]
-    return time_cols + feature_cols + ["label"]
-
-
-def load_dataset(csv_files: List[Path]) -> pd.DataFrame:
-    col_names = build_column_names()
-    frames: List[pd.DataFrame] = []
-
-    for file_path in csv_files:
-        df = pd.read_csv(file_path, header=None)
-        if df.shape[1] != 42:
-            # Skip files that are not in expected schema.
-            continue
-
-        df.columns = col_names
-        df["source_file"] = file_path.name
-        df["row_in_file"] = np.arange(len(df), dtype=np.int32)
-        frames.append(df)
-
-    if not frames:
-        raise RuntimeError("Nenhum CSV valido (42 colunas) foi encontrado no dataset.")
-
-    all_data = pd.concat(frames, axis=0, ignore_index=True)
-    all_data["label"] = (all_data["label"] == 1).astype(np.int8)
-    return all_data
-
-
-def temporal_split_by_file(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    train_parts: List[pd.DataFrame] = []
-    val_parts: List[pd.DataFrame] = []
-    test_parts: List[pd.DataFrame] = []
-
-    for _, g in df.groupby("source_file", sort=True):
-        g_sorted = g.sort_values(["row_in_file"]).reset_index(drop=True)
-        y = g_sorted["label"]
-        can_stratify = y.nunique() > 1 and y.value_counts().min() >= 2
-
-        train_val, test = train_test_split(
-            g_sorted,
-            test_size=0.20,
-            random_state=42,
-            shuffle=True,
-            stratify=y if can_stratify else None,
-        )
-
-        y_train_val = train_val["label"]
-        can_stratify_tv = y_train_val.nunique() > 1 and y_train_val.value_counts().min() >= 2
-
-        train, val = train_test_split(
-            train_val,
-            test_size=0.125,
-            random_state=42,
-            shuffle=True,
-            stratify=y_train_val if can_stratify_tv else None,
-        )
-
-        train_parts.append(train.copy())
-        val_parts.append(val.copy())
-        test_parts.append(test.copy())
-
-    train_df = pd.concat(train_parts, ignore_index=True)
-    val_df = pd.concat(val_parts, ignore_index=True)
-    test_df = pd.concat(test_parts, ignore_index=True)
     return train_df, val_df, test_df
+
+
+def stratified_split(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    y = df["label_flapping"]
+    if y.nunique() < 2 or y.value_counts().min() < 2:
+        raise RuntimeError("Dataset sem diversidade minima de classes para treinamento supervisionado.")
+
+    train_val, test = train_test_split(
+        df,
+        test_size=0.20,
+        random_state=42,
+        shuffle=True,
+        stratify=y,
+    )
+    y_train_val = train_val["label_flapping"]
+    train, val = train_test_split(
+        train_val,
+        test_size=0.125,
+        random_state=42,
+        shuffle=True,
+        stratify=y_train_val,
+    )
+    return train.copy(), val.copy(), test.copy()
+
+
+def select_feature_columns(df: pd.DataFrame) -> List[str]:
+    excluded = {"window_start", "collector", "prefix", "label_flapping"}
+    feature_cols = [col for col in df.columns if col not in excluded]
+    if not feature_cols:
+        raise RuntimeError("Nenhuma feature numerica foi encontrada no dataset.")
+    return feature_cols
 
 
 def find_best_threshold(y_true: np.ndarray, y_proba: np.ndarray) -> float:
@@ -170,7 +191,8 @@ def save_outputs(
     out_dir: Path,
     metrics_rows: List[Dict[str, float]],
     split_info: Dict[str, int],
-    source_distribution: pd.DataFrame,
+    collector_distribution: pd.DataFrame,
+    feature_cols: List[str],
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -178,12 +200,13 @@ def save_outputs(
     metrics_df = metrics_df.sort_values("f2", ascending=False).reset_index(drop=True)
     metrics_df.to_csv(out_dir / "metrics_modelos.csv", index=False)
 
-    source_distribution.to_csv(out_dir / "distribuicao_classes_por_arquivo.csv", index=False)
+    collector_distribution.to_csv(out_dir / "distribuicao_classes_por_coletor.csv", index=False)
 
     with open(out_dir / "resumo_execucao.json", "w", encoding="utf-8") as f:
         json.dump(
             {
                 "split_info": split_info,
+                "feature_cols": feature_cols,
                 "modelo_melhor_f2": metrics_df.iloc[0].to_dict() if len(metrics_df) else {},
             },
             f,
@@ -194,13 +217,13 @@ def save_outputs(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Pipeline de ML para deteccao de anomalias BGP com foco em evento raro."
+        description="Pipeline de ML para deteccao de flapping BGP no dataset gerado pelo coletor."
     )
     parser.add_argument(
-        "--dataset-root",
+        "--dataset-path",
         type=Path,
-        default=Path("dataset"),
-        help="Diretorio raiz onde os CSVs estao localizados.",
+        default=Path("dataset/flapping_raw_windows/bgp_flapping_windows.csv"),
+        help="Caminho para o CSV gerado pelo build_bgp_flapping_dataset.py.",
     )
     parser.add_argument(
         "--output-dir",
@@ -210,29 +233,28 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    csv_files = discover_csv_files(args.dataset_root)
-    if not csv_files:
-        raise RuntimeError("Nenhum CSV encontrado no caminho informado.")
+    if not args.dataset_path.exists():
+        raise RuntimeError("O CSV do dataset informado nao foi encontrado.")
 
-    df = load_dataset(csv_files)
+    df = load_dataset(args.dataset_path)
 
     dist = (
-        df.groupby("source_file")["label"]
+        df.groupby("collector")["label_flapping"]
         .agg(total="count", positivos="sum")
         .reset_index()
     )
     dist["taxa_positiva"] = dist["positivos"] / dist["total"]
 
-    train_df, val_df, test_df = temporal_split_by_file(df)
+    train_df, val_df, test_df = temporal_split(df)
 
-    feature_cols = [f"f_{i:02d}" for i in range(1, 38)]
+    feature_cols = select_feature_columns(df)
 
     x_train = train_df[feature_cols].to_numpy(dtype=np.float32)
-    y_train = train_df["label"].to_numpy(dtype=np.int8)
+    y_train = train_df["label_flapping"].to_numpy(dtype=np.int8)
     x_val = val_df[feature_cols].to_numpy(dtype=np.float32)
-    y_val = val_df["label"].to_numpy(dtype=np.int8)
+    y_val = val_df["label_flapping"].to_numpy(dtype=np.int8)
     x_test = test_df[feature_cols].to_numpy(dtype=np.float32)
-    y_test = test_df["label"].to_numpy(dtype=np.int8)
+    y_test = test_df["label_flapping"].to_numpy(dtype=np.int8)
 
     models: Dict[str, Pipeline | RandomForestClassifier] = {
         "logreg_balanced": Pipeline(
@@ -283,7 +305,7 @@ def main() -> None:
         "test_positivos": int(y_test.sum()),
     }
 
-    save_outputs(args.output_dir, metrics_rows, split_info, dist)
+    save_outputs(args.output_dir, metrics_rows, split_info, dist, feature_cols)
 
     print("\nResumo do split:")
     for k, v in split_info.items():
@@ -291,7 +313,7 @@ def main() -> None:
 
     print("\nArquivos gerados em:", args.output_dir)
     print("- metrics_modelos.csv")
-    print("- distribuicao_classes_por_arquivo.csv")
+    print("- distribuicao_classes_por_coletor.csv")
     print("- resumo_execucao.json")
 
 
