@@ -15,32 +15,8 @@ em PCO213 (Aprendizado de Máquina / Mineração de Dados), aproveitando:
 
 ## Dataset e Estratégia de Dados
 
-O projeto agora trabalha com dois caminhos complementares.
-
-### 1. Benchmark acadêmico inicial
-
-Fonte acadêmica (SFU/IEEE DataPort) com registros BGP processados em CSV:
-
-- 37 features extraídas de mensagens BGP UPDATE.
-- Sinalizações de announcements, withdrawals, NLRI, AS-path,
-  edit distance e demais estatísticas de roteamento.
-- Rótulo binário por janela temporal: normal (-1) e anômalo (1).
-
-Arquivos do benchmark neste projeto:
-
-- `dataset/BGP_RIPE_datasets_for_anomaly_detection_csv_revised_19022021.zip`
-- `dataset/BGP_RIPE_datasets_for_anomaly_detection_csv_revised_19022021/`
-
-Fontes oficiais para reprodução:
-
-1. Página oficial do projeto (SFU):
-   [SFU BGP Datasets](http://www.sfu.ca/~ljilja/cnl/projects/BGP_datasets/index.html)
-2. Link direto do arquivo ZIP utilizado neste repositório:
-   [Download direto do ZIP](http://www.ensc.sfu.ca/~ljilja/cnl/projects/BGP_datasets/BGP_RIPE_datasets_for_anomaly_detection_csv_revised_19022021.zip)
-3. Referência complementar no IEEE DataPort (descrição e metadados):
-   [IEEE DataPort - RIPE and BCNET](https://ieee-dataport.org/open-access/border-gateway-protocol-bgp-routing-records-reseaux-ip-europeens-ripe-and-bcnet)
-
-### 2. Dataset de flapping construído a partir de dados brutos
+O projeto usa como base principal um dataset de flapping construído a partir de
+dados brutos de BGP UPDATE.
 
 Para manter a aderência à proposta original de flapping BGP, o repositório também
 inclui um gerador de dataset a partir de BGP UPDATE bruto usando RIS, RouteViews
@@ -94,6 +70,7 @@ Construir um pipeline reproduzível para:
 - `dataset/`: dados brutos e dados preparados para modelagem.
 - `resultados/`: tabelas, figuras, métricas e artefatos da análise.
 - `build_bgp_flapping_dataset.py`: geração de dataset a partir de BGP UPDATE bruto.
+- `pipeline_bgp_flapping.py`: treinamento e avaliação dos modelos sobre o dataset gerado.
 - `MONTAGEM_DATASET_FLAPPING.md`: metodologia e instruções para montagem do dataset.
 - `README.md`: visão geral e direção técnica do projeto.
 - `contexto.md`: guia operacional detalhado do projeto.
@@ -109,35 +86,22 @@ Ao final da fase inicial, o projeto deve entregar:
 
 ## Execução Rápida
 
-### Fluxo 1. Benchmark acadêmico inicial
-
-Executar o pipeline com o dataset CSV já presente no repositório:
-
-```bash
-python pipeline_bgp_flapping.py
-```
-
-Saídas geradas em `resultados/`:
-
-1. `metrics_modelos.csv`
-2. `distribuicao_classes_por_arquivo.csv`
-3. `resumo_execucao.json`
-
-### Fluxo 2. Montagem de dataset de flapping a partir de UPDATE bruto
+### 1. Montagem de dataset de flapping a partir de UPDATE bruto
 
 Executar o gerador de dataset com uma coleta histórica controlada:
 
 ```bash
 python build_bgp_flapping_dataset.py \
    --from-time "2024-01-01 00:00:00" \
-   --until-time "2024-01-01 06:00:00" \
-   --collectors rrc00 route-views.sg \
-   --projects ris routeviews \
+   --until-time "2024-01-02 00:00:00" \
+   --collectors route-views.sg \
+   --projects routeviews \
    --window-minutes 5 \
-   --top-prefixes-per-window 50
+   --top-prefixes-per-window 20 \
+   --output-dir dataset/flapping_raw_windows_24h
 ```
 
-Saídas geradas em `dataset/flapping_raw_windows/`:
+Saídas geradas em `dataset/flapping_raw_windows_24h/`:
 
 1. `bgp_flapping_windows.csv`
 2. `metadata.json`
@@ -145,6 +109,37 @@ Saídas geradas em `dataset/flapping_raw_windows/`:
 Observação: o rótulo `label_flapping` desse fluxo é heurístico e foi desenhado
 como ponto de partida reproduzível para estudo acadêmico. Ele não substitui
 ground truth operacional.
+
+### 2. Treinamento do pipeline no dataset gerado
+
+Executar o pipeline de ML usando o CSV gerado pelo coletor:
+
+```bash
+python pipeline_bgp_flapping.py \
+   --dataset-path dataset/flapping_raw_windows_24h/bgp_flapping_windows.csv \
+   --output-dir resultados_flapping_24h
+```
+
+Saídas geradas em `resultados_flapping_24h/`:
+
+1. `metrics_modelos.csv`
+2. `distribuicao_classes_por_coletor.csv`
+3. `resumo_execucao.json`
+
+### Parâmetros principais do coletor
+
+- `--from-time`: início da coleta histórica em UTC.
+- `--until-time`: fim da coleta histórica em UTC.
+- `--collectors`: coletores a consultar, como `route-views.sg`.
+- `--projects`: projeto de origem dos dados, como `routeviews`.
+- `--window-minutes`: tamanho da janela de agregação temporal.
+- `--top-prefixes-per-window`: número máximo de prefixos mantidos por janela, ordenados por churn.
+- `--output-dir`: diretório de saída do dataset agregado.
+
+### Parâmetros principais do pipeline
+
+- `--dataset-path`: caminho para o arquivo `bgp_flapping_windows.csv`.
+- `--output-dir`: diretório onde serão gravadas as métricas e o resumo de execução.
 
 ## Licença
 
