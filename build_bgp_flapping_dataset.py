@@ -4,9 +4,12 @@ import argparse
 import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import mean
 from typing import DefaultDict, Dict, Iterable, Iterator, List, Tuple
+from urllib.error import HTTPError
+from urllib.request import urlretrieve
 
 import pandas as pd
 
@@ -20,6 +23,173 @@ class UpdateRecord:
     event_type: str
     as_path: str
     communities: Tuple[str, ...]
+
+
+def _attribute_name(attribute: object) -> str:
+    if isinstance(attribute, dict):
+        attribute_type = attribute.get("type")
+        if isinstance(attribute_type, dict):
+            return next(iter(attribute_type.values()))
+        if attribute_type is not None:
+            return str(attribute_type)
+    return ""
+
+
+def _extract_mrt_prefixes(record_data: Dict[str, object]) -> Iterator[UpdateRecord]:
+    timestamp_info = record_data.get("timestamp", {})
+    timestamp = int(next(iter(timestamp_info.keys()))) if timestamp_info else 0
+    collector = str(record_data.get("collector", "unknown"))
+    peer_as = str(record_data.get("peer_as", "unknown"))
+
+    bgp_message = record_data.get("bgp_message")
+    if not isinstance(bgp_message, dict):
+        return
+
+    as_path = ""
+    communities: List[str] = []
+    announced_prefixes: List[str] = []
+    withdrawn_prefixes: List[str] = []
+
+    for withdrawn in bgp_message.get("withdrawn_routes", []):
+        prefix = withdrawn.get("prefix")
+        if prefix:
+            withdrawn_prefixes.append(str(prefix))
+
+    for nlri in bgp_message.get("nlri", []):
+        prefix = nlri.get("prefix")
+        if prefix:
+            announced_prefixes.append(str(prefix))
+
+    for attribute in bgp_message.get("path_attributes", []):
+        if not isinstance(attribute, dict):
+            continue
+        attr_name = _attribute_name(attribute)
+        value = attribute.get("value")
+
+        if attr_name in {"AS_PATH", "AS4_PATH"} and isinstance(value, list):
+            segments: List[str] = []
+            for segment in value:
+                if not isinstance(segment, dict):
+                    continue
+                seg_values = segment.get("value", [])
+                if isinstance(seg_values, list):
+                    segments.extend(str(item) for item in seg_values)
+            as_path = " ".join(segments)
+        elif attr_name == "COMMUNITY" and isinstance(value, list):
+            communities.extend(str(item) for item in value)
+        elif attr_name == "COMMUNITIES" and isinstance(value, list):
+            communities.extend(str(item) for item in value)
+        elif attr_name == "MP_REACH_NLRI" and isinstance(value, dict):
+            for nlri in value.get("nlri", []):
+                prefix = nlri.get("prefix")
+                if prefix:
+                    announced_prefixes.append(str(prefix))
+        elif attr_name == "MP_UNREACH_NLRI" and isinstance(value, dict):
+            for withdrawn in value.get("withdrawn_routes", []):
+                prefix = withdrawn.get("prefix")
+                if prefix:
+                    withdrawn_prefixes.append(str(prefix))
+
+    for prefix in announced_prefixes:
+        yield UpdateRecord(
+            timestamp=timestamp,
+            collector=collector,
+            peer_asn=peer_as,
+            prefix=prefix,
+            event_type="A",
+            as_path=as_path,
+            communities=tuple(communities),
+        )
+
+    for prefix in withdrawn_prefixes:
+        yield UpdateRecord(
+            timestamp=timestamp,
+            collector=collector,
+            peer_asn=peer_as,
+            prefix=prefix,
+            event_type="W",
+            as_path=as_path,
+            communities=tuple(communities),
+        )
+
+
+def _iter_routeviews_slots(from_time: str, until_time: str) -> Iterator[datetime]:
+    start = datetime.strptime(from_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    end = datetime.strptime(until_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    current = start.replace(minute=(start.minute // 15) * 15, second=0)
+    while current < end:
+        yield current
+        current += timedelta(minutes=15)
+
+
+def _routeviews_url(collector: str, slot: datetime) -> str:
+    return (
+        f"https://archive.routeviews.org/{collector}/bgpdata/"
+        f"{slot:%Y.%m}/UPDATES/updates.{slot:%Y%m%d.%H%M}.bz2"
+    )
+
+
+def _download_routeviews_update(cache_dir: Path, collector: str, slot: datetime) -> Path | None:
+    collector_dir = cache_dir / "routeviews" / collector / f"{slot:%Y.%m}"
+    collector_dir.mkdir(parents=True, exist_ok=True)
+    file_path = collector_dir / f"updates.{slot:%Y%m%d.%H%M}.bz2"
+    if file_path.exists():
+        return file_path
+
+    url = _routeviews_url(collector, slot)
+    try:
+        urlretrieve(url, file_path)
+    except HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    return file_path
+
+
+def stream_updates_from_mrtparse(
+    *,
+    from_time: str,
+    until_time: str,
+    collectors: List[str],
+    projects: List[str],
+    cache_dir: Path,
+) -> Iterator[UpdateRecord]:
+    if "routeviews" not in projects:
+        raise RuntimeError(
+            "Fallback com mrtparse atualmente suporta apenas o projeto routeviews. "
+            "Use --projects routeviews e um coletor como route-views.sg."
+        )
+
+    try:
+        from mrtparse import Reader
+    except ImportError as exc:
+        raise RuntimeError("mrtparse nao esta instalado no ambiente.") from exc
+
+    for collector in collectors:
+        if not collector.startswith("route-views"):
+            continue
+
+        for slot in _iter_routeviews_slots(from_time, until_time):
+            file_path = _download_routeviews_update(cache_dir, collector, slot)
+            if file_path is None:
+                continue
+
+            reader = Reader(str(file_path))
+            for _ in reader:
+                record_data = dict(reader.data)
+                record_data["collector"] = collector
+                subtype = record_data.get("subtype", {})
+                subtype_name = next(iter(subtype.values())) if isinstance(subtype, dict) and subtype else ""
+                if not str(subtype_name).startswith("BGP4MP_MESSAGE"):
+                    continue
+                bgp_message = record_data.get("bgp_message", {})
+                if not isinstance(bgp_message, dict):
+                    continue
+                msg_type = bgp_message.get("type", {})
+                msg_name = next(iter(msg_type.values())) if isinstance(msg_type, dict) and msg_type else ""
+                if msg_name != "UPDATE":
+                    continue
+                yield from _extract_mrt_prefixes(record_data)
 
 
 def parse_args() -> argparse.Namespace:
@@ -108,10 +278,14 @@ def stream_updates(
     try:
         import pybgpstream
     except ImportError as exc:
-        raise RuntimeError(
-            "PyBGPStream nao esta instalado. Instale com 'pip install pybgpstream' "
-            "e garanta as dependencias nativas do libbgpstream."
-        ) from exc
+        yield from stream_updates_from_mrtparse(
+            from_time=from_time,
+            until_time=until_time,
+            collectors=collectors,
+            projects=projects,
+            cache_dir=cache_dir,
+        )
+        return
 
     stream = pybgpstream.BGPStream(
         from_time=from_time,
