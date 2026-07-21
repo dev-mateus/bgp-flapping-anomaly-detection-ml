@@ -117,10 +117,10 @@ Executar o pipeline de ML usando o CSV gerado pelo coletor:
 ```bash
 python pipeline_bgp_flapping.py \
    --dataset-path dataset/flapping_raw_windows_24h/bgp_flapping_windows.csv \
-   --output-dir resultados_flapping_24h
+   --output-dir resultados
 ```
 
-Saídas geradas em `resultados_flapping_24h/`:
+Saídas geradas em `resultados/`:
 
 1. `metrics_modelos.csv`
 2. `distribuicao_classes_por_coletor.csv`
